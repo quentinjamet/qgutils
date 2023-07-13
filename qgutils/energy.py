@@ -7,6 +7,7 @@ from .grid import *
 from .pv import *
 from .omega import *
 from .inout import *
+from .fftlib import *
 
 
 def comp_vel(psi, Delta, bc=None, loc='center'):
@@ -195,8 +196,49 @@ def integral(psi, dh, Delta, average=False):
 
   return psi_i
 
+def intz(psi, dh):
+    '''
+    Compute vertical integral of a field
 
-def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b=0, toc=0, nu_in_b=True, bc_fac=0, interp=False, average=False):
+    if the field is defined on p-levels, the integral is the usual integral
+    if the field is defined on b-levels, we assume that psi = 0 at
+    the upper and lower boundaries
+
+
+    Parameters
+    ----------
+
+    psi : array [nz, ny,nx] for p-level field or array [nz-1, ny,nx] for b-level field
+    dh : array [nz], *dh is the layer thickness of the p-level* (no matter what)
+
+    Returns
+    -------
+
+    psi_out: array [ny,nx]
+
+    '''
+    si = psi.shape
+    nl0 = si[0]
+    N = si[-1]
+    nl = len(dh)
+
+    # total H even for b-levels
+    Ht = np.sum(dh)
+
+    dhl = np.copy(dh)
+    if nl0 == nl-1:
+        dhl = 0.5*(dh[1:] + dh[:-1])
+
+    if psi.ndim == 3:
+        psi_out = np.sum(psi*dhl[:,None,None], axis=0)
+    elif psi.ndim == 2:
+        psi_out = np.sum(psi*dhl[:,None], axis=0)
+
+    return psi_out
+
+
+
+def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b=0, toc=0, nu_in_b=True, bc_fac=0, interp=False, average=False, maps=False, spec_flx=False):
   '''
   Compute Lorenz energy cycle
 
@@ -223,6 +265,9 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
             if QG equations are derived from SW there is no thichness dissipation (nu_in_b=False)
   bc_fac: scalar (only used if psi is a node field) 0 for free slip or 1 for no slip 
   average : Bool, if False, return energy integral (default), if True: return energy average
+  maps: Bool, if True (default=False), return depth integrated maps for each terms, 
+            including both 'perspectives (i.e. EKE and MKE)' of eddy-mean flow energy transfers.
+  spec_flx: Bool, if True (default=False), return (some) spetral fluxes
 
   Returns
   -------
@@ -230,7 +275,6 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
   lec: dict of all energy fluxes and energy reservoirs. Sign convention matches name:
     e.g. if mke2mpe >0 then there is a transfer from mke to mpe
   '''
-
 
   N2,f0 = reshape3d(dh,N2,f0)
 
@@ -254,7 +298,8 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
   n_me = 1
   for it in range(0,si_t):
 
-    print("Loop 1/2, iter ", it, "/", si_t-1, end="\r")
+    #print("Loop 1/2, iter ", it, "/", si_t-1, end="\r")
+    print("Loop 1/2, iter ", it, "/", si_t-1)
   
     p = load_generic(pfiles, it, 'p', rescale=1/f0, interp=interp, si_t=si_t, subtract_bc=True)
     if isinstance(forcing_z, list):
@@ -288,8 +333,8 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
   ke_me = comp_ke(p_me,Delta)
   pe_me = comp_pe(p_me, dh, N2,f0, Delta)
   
-  ei_ke_me = integral(ke_me, dh, Delta, average)
-  ei_pe_me = integral(pe_me, dh, Delta, average)
+  ei_ke_me = intz(ke_me, dh)
+  ei_pe_me = intz(pe_me, dh)
   
   e_surf   = np.zeros((nl,N,N))
   e_bottom = np.zeros((nl,N,N))
@@ -308,27 +353,36 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
   
   e_diab[0,:,:] = b_me[0,:,:]*d_me
 
-  ei_surf_me   = integral(e_surf, dh, Delta, average)
-  ei_bottom_me = integral(e_bottom, dh, Delta, average)
-  ei_diss_k_me = integral(-p_me*dissip_k_me, dh, Delta, average)
-  ei_diss_p_me = integral(-p_me*dissip_p_me, dh, Delta, average)
-  ei_wb_me     = integral(w_me*b_me, dh, Delta, average)
-  ei_diab_me   = integral(e_diab, dh, Delta, average)
+  ei_surf_me   = intz(e_surf, dh)
+  ei_bottom_me = intz(e_bottom, dh)
+  ei_diss_k_me = intz(-p_me*dissip_k_me, dh)
+  ei_diss_p_me = intz(-p_me*dissip_p_me, dh)
+  ei_wb_me     = intz(w_me*b_me, dh)
+  ei_diab_me   = intz(e_diab, dh)
   
   # compute all terms
-  ei_ke   = np.zeros(si_t)
-  ei_pe   = np.zeros(si_t)
-  ei_surf   = np.zeros(si_t)
-  ei_bottom = np.zeros(si_t)
-  ei_diss_k = np.zeros(si_t)
-  ei_diss_p = np.zeros(si_t)
-  ei_wb     = np.zeros(si_t)
-  ei_ke_me2ke_p = np.zeros(si_t)
-  ei_pe_me2pe_p = np.zeros(si_t)
-  ei_diab     = np.zeros(si_t)
+  ei_ke           = np.zeros((N-1, N-1))
+  ei_pe           = np.zeros((N, N))
+  ei_surf         = np.zeros((N, N))
+  ei_bottom       = np.zeros((N, N))
+  ei_diss_k       = np.zeros((N, N))
+  ei_diss_p       = np.zeros((N, N))
+  ei_wb           = np.zeros((N, N))
+  ei_ke_me2ke_p   = np.zeros((N, N))
+  ei_pe_me2pe_p   = np.zeros((N, N))
+  ei_ke_me2ke_p_2 = np.zeros((N, N))
+  ei_pe_me2pe_p_2 = np.zeros((N, N))
+  ei_diab         = np.zeros((N, N))
+  # spectral fluxes
+  if spec_flx:
+    epe2eke_spflx   = np.zeros([int((N-1)/2)])
+    jpz_m = np.zeros([nl, N, N])
+    jps_m = np.zeros([nl, N, N])
   
+  n_me = 1
   for it in range(0,si_t):
-    print("Loop 2/2, iter ", it, "/", si_t-1, end="\r")
+    #print("Loop 2/2, iter ", it, "/", si_t-1, end="\r")
+    print("Loop 2/2, iter ", it, "/", si_t-1)
 
     p = load_generic(pfiles, it, 'p', 1/f0, interp=interp, si_t=si_t, subtract_bc=interp)
     if isinstance(forcing_z, list):
@@ -365,9 +419,13 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
     
     jpz = jacobian(p_p,z_p, Delta)
     jps = jacobian(p_p,s_p, Delta)
+    jpz_2 = jacobian(p_p,z_me, Delta)
+    jps_2 = jacobian(p_p,s_me, Delta)
   
     ke_me2ke_p = -p_me*jpz
-    pe_me2pe_p = -p_me*jps
+    pe_me2pe_p =  p_me*jps	#remove '-' sign ; =-b.J(\psi, b) through integration by part
+    ke_me2ke_p_2 = -p_p*jpz_2
+    pe_me2pe_p_2 =  p_p*jps_2	#remove '-' sign ; =-b.J(\psi, b) through integration by part
     
     dissip_k = -nu4*laplacian(laplacian(z_p,Delta, bc_fac=bc_fac),Delta, bc_fac=bc_fac)
     dissip_p = -nu4*laplacian(laplacian(s_p,Delta),Delta)
@@ -380,38 +438,81 @@ def lorenz_cycle(pfiles,dh,N2,f0,Delta,bf=0, nu=0, nu4=0, forcing_z=0, forcing_b
     e_bottom[-1,:,:] = -p_p[-1,:,:]*bottom_ekman
 
     e_diab[0,:,:] = b_p[0,:,:]*(loc_forcing_b - d_me)
-
-    ei_ke_me2ke_p[it] = integral(ke_me2ke_p, dh, Delta, average)
-    ei_pe_me2pe_p[it] = integral(pe_me2pe_p, dh, Delta, average)
-    ei_surf[it]   = integral(e_surf, dh, Delta, average)
-    ei_bottom[it] = integral(e_bottom, dh, Delta, average)
-    ei_diss_k[it] = integral(-p_p*dissip_k, dh, Delta, average)
-    ei_diss_p[it] = integral(-p_p*dissip_p, dh, Delta, average)
-    ei_wb[it]     = integral(w_p*b_p, dh, Delta, average)
-    ei_ke[it]     = integral(ke_p, dh, Delta, average)
-    ei_pe[it]     = integral(pe_p, dh, Delta, average)
-    ei_diab[it]   = integral(e_diab, dh, Delta, average)
+    
+    ei_ke_me2ke_p   += (intz(ke_me2ke_p, dh) - ei_ke_me2ke_p) / n_me
+    ei_pe_me2pe_p   += (intz(pe_me2pe_p, dh) - ei_pe_me2pe_p) / n_me
+    ei_ke_me2ke_p_2 += (intz(ke_me2ke_p_2, dh) - ei_ke_me2ke_p_2) / n_me
+    ei_pe_me2pe_p_2 += (intz(pe_me2pe_p_2, dh) - ei_pe_me2pe_p_2) / n_me
+    ei_surf         += (intz(e_surf, dh) - ei_surf) / n_me
+    ei_bottom       += (intz(e_bottom, dh) - ei_bottom) / n_me
+    ei_diss_k       += (intz(-p_p*dissip_k, dh) - ei_diss_k) / n_me
+    ei_diss_p       += (intz(-p_p*dissip_p, dh) - ei_diss_p) / n_me
+    ei_wb           += (intz(w_p*b_p, dh) - ei_wb) / n_me
+    ei_ke           += (intz(ke_p, dh) - ei_ke) / n_me
+    ei_pe           += (intz(pe_p, dh) - ei_pe) / n_me
+    ei_diab         += (intz(e_diab, dh) - ei_diab) / n_me
+    
+    #-- compute some spectral fluxes --
+    if spec_flx:
+        kkk, tmp_flx  = get_spec_flux(w_p, b_p, Delta, window=None)
+        epe2eke_spflx += ( intz(tmp_flx, dh) - epe2eke_spflx ) / n_me
+        jpz_m += (jpz - jpz_m)/n_me
+        jps_m += (jps - jps_m)/n_me
+    #
+    n_me += 1
 
   # sign convention matches name
   lec = {}
-  lec["f2mke"]   = ei_surf_me             
-  lec["f2eke"]   = np.mean(ei_surf)
-  lec["f2mpe"]   = ei_diab_me             
-  lec["f2epe"]   = np.mean(ei_diab)
-  lec["mke2mpe"] = -ei_wb_me              
-  lec["epe2eke"] = np.mean(ei_wb)         
-  lec["mke2eke"] = np.mean(ei_ke_me2ke_p) 
-  lec["mpe2epe"] = np.mean(ei_pe_me2pe_p) 
-  lec["mke2dis"] = -ei_diss_k_me          
-  lec["eke2dis"] = -np.mean(ei_diss_k)    
-  lec["mpe2dis"] = -ei_diss_p_me          # overwritten if not nu_in_b
-  lec["epe2dis"] = -np.mean(ei_diss_p)    # overwritten if not nu_in_b
-  lec["mke2bf"]  = -ei_bottom_me          
-  lec["eke2bf"]  = -np.mean(ei_bottom)    
-  lec["mke"]     = ei_ke_me      
-  lec["eke"]     = np.mean(ei_ke)
-  lec["mpe"]     = ei_pe_me      
-  lec["epe"]     = np.mean(ei_pe)
+  lec["f2mke"]   = ei_surf_me.sum()*Delta**2             
+  lec["f2eke"]   = ei_surf.sum()*Delta**2
+  lec["f2mpe"]   = ei_diab_me .sum()*Delta**2            
+  lec["f2epe"]   = ei_diab.sum()*Delta**2
+  lec["mke2mpe"] = -ei_wb_me.sum()*Delta**2              
+  lec["epe2eke"] = ei_wb.sum()*Delta**2         
+  lec["mke2eke"] = ei_ke_me2ke_p.sum()*Delta**2
+  lec["mpe2epe"] = ei_pe_me2pe_p.sum()*Delta**2 
+  lec["eke2mke"] = ei_ke_me2ke_p_2.sum()*Delta**2
+  lec["epe2mpe"] = ei_pe_me2pe_p_2.sum()*Delta**2
+  lec["mke2dis"] = -ei_diss_k_me.sum()*Delta**2          
+  lec["eke2dis"] = -ei_diss_k.sum()*Delta**2    
+  lec["mpe2dis"] = -ei_diss_p_me.sum()*Delta**2          # overwritten if not nu_in_b
+  lec["epe2dis"] = -ei_diss_p.sum()*Delta**2    # overwritten if not nu_in_b
+  lec["mke2bf"]  = -ei_bottom_me.sum()*Delta**2          
+  lec["eke2bf"]  = -ei_bottom.sum()*Delta**2    
+  lec["mke"]     = ei_ke_me.sum()*Delta**2      
+  lec["eke"]     = ei_ke.sum()*Delta**2
+  lec["mpe"]     = ei_pe_me.sum()*Delta**2      
+  lec["epe"]     = ei_pe.sum()*Delta**2
+  # maps
+  if maps:
+    lec["f2mke_map"]   = ei_surf_me             
+    lec["f2eke_map"]   = ei_surf
+    lec["f2mpe_map"]   = ei_diab_me             
+    lec["f2epe_map"]   = ei_diab
+    lec["mke2mpe_map"] = -ei_wb_me              
+    lec["epe2eke_map"] = ei_wb         
+    lec["mke2eke_map"] = ei_ke_me2ke_p
+    lec["mpe2epe_map"] = ei_pe_me2pe_p 
+    lec["eke2mke_map"] = ei_ke_me2ke_p_2
+    lec["epe2mpe_map"] = ei_pe_me2pe_p_2
+    lec["mke2dis_map"] = -ei_diss_k_me          
+    lec["eke2dis_map"] = -ei_diss_k    
+    lec["mpe2dis_map"] = -ei_diss_p_me          # overwritten if not nu_in_b
+    lec["epe2dis_map"] = -ei_diss_p    # overwritten if not nu_in_b
+    lec["mke2bf_map"]  = -ei_bottom_me          
+    lec["eke2bf_map"]  = -ei_bottom    
+    lec["mke_map"]     = ei_ke_me      
+    lec["eke_map"]     = ei_ke
+    lec["mpe_map"]     = ei_pe_me      
+    lec["epe_map"]     = ei_pe
+  # spectral fluxes
+  if spec_flx:
+    lec["k"]        = kkk
+    lec["epe2eke_spflx"]  = epe2eke_spflx
+    kkk, tmp_flx  = get_spec_flux(-p_me, jpz_m, Delta, window=None)
+    lec["mke2eke_spflx"]  = intz(tmp_flx, dh)
+    kkk, tmp_flx = get_spec_flux(-p_me, jps_m, Delta, window=None)
+    lec["mpe2epe_spflx"]  = intz(tmp_flx, dh)
 
   if not nu_in_b:
     lec["mpe2dis"] = 0
